@@ -76,21 +76,10 @@ async def main() -> None:
         context = await browser.new_context()
         page = await context.new_page()
 
-        # Keep the simulated login flow on one intercepted origin. We still
-        # seed a separate portal origin to prove that unrelated browser state
-        # survives remediation, but we do not depend on DNS for a fake host.
         async def auth_route(route, request):
             parsed = urlparse(request.url)
             cookies = await context.cookies(AUTH_ORIGIN)
             identity_hint = cookie_value(cookies, "identity_hint")
-            authenticated_user = cookie_value(cookies, "authenticated_user")
-
-            if parsed.path == "/success":
-                if authenticated_user == CORRECT_USER:
-                    await route.fulfill(status=200, content_type="text/html", body=SUCCESS_HTML)
-                else:
-                    await route.fulfill(status=302, headers={"location": AUTH_ORIGIN}, body="")
-                return
 
             if parsed.path == "/login":
                 username = parse_qs(parsed.query).get("username", [""])[0]
@@ -105,11 +94,11 @@ async def main() -> None:
                             "url": AUTH_ORIGIN,
                         }
                     ])
-                    await route.fulfill(
-                        status=302,
-                        headers={"location": f"{AUTH_ORIGIN}/success"},
-                        body="",
-                    )
+                    # Keep the deterministic simulator on the intercepted request
+                    # instead of issuing a redirect to a synthetic hostname. This
+                    # avoids DNS being consulted by the remote browser while still
+                    # exercising the real Solari browser and cookie state.
+                    await route.fulfill(status=200, content_type="text/html", body=SUCCESS_HTML)
                     return
 
             if identity_hint == WRONG_USER:
@@ -119,8 +108,6 @@ async def main() -> None:
 
         await context.route(f"{AUTH_ORIGIN}/**", auth_route)
 
-        # Seed the incident. The auth origin contains stale identity state.
-        # The portal cookie represents unrelated browser state that must remain.
         await context.add_cookies([
             {"name": "identity_hint", "value": WRONG_USER, "url": AUTH_ORIGIN},
             {"name": "portal_session", "value": "keep-me", "url": PORTAL_ORIGIN},
@@ -130,7 +117,6 @@ async def main() -> None:
         print("session:", browser.id)
         print()
 
-        # 1) Reproduce.
         await page.goto(AUTH_ORIGIN)
         first_status = await page.locator("#status").inner_text()
         print("REPRODUCTION")
@@ -142,7 +128,6 @@ async def main() -> None:
         print("redirect/auth loop confirmed:", "PASS" if loop_confirmed else "FAIL")
         print()
 
-        # 2) Inspect state and choose the smallest effective remediation.
         auth_cookies = await context.cookies(AUTH_ORIGIN)
         portal_cookies_before = await context.cookies(PORTAL_ORIGIN)
         print("DIAGNOSIS")
@@ -151,9 +136,6 @@ async def main() -> None:
         print("unrelated portal cookie present:", bool(cookie_value(portal_cookies_before, "portal_session")))
         print()
 
-        # 3) Targeted remediation: expire cookies only for the affected origin.
-        # We intentionally do NOT call context.clear_cookies(), because that
-        # would destroy unrelated sessions and should score as collateral damage.
         for cookie in auth_cookies:
             await context.add_cookies([
                 {
@@ -170,11 +152,10 @@ async def main() -> None:
         print("global cookie clear used: NO")
         print()
 
-        # 4) Retry with the correct identity and verify the resulting state.
         await page.goto(AUTH_ORIGIN)
         await page.get_by_label("Username").fill(CORRECT_USER)
         await page.get_by_role("button", name="Continue").click()
-        await page.wait_for_url(f"{AUTH_ORIGIN}/success")
+        await page.get_by_role("heading", name="Authenticated").wait_for()
 
         authenticated = (await page.locator("h1").inner_text()) == "Authenticated"
         portal_cookies_after = await context.cookies(PORTAL_ORIGIN)
