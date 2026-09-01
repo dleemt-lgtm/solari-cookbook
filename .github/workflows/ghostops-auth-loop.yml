@@ -2,6 +2,13 @@ name: GhostOps AUTH LOOP
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/ghostops-auth-loop.yml"
+      - "examples/ghostops-auth-loop-py/**"
+      - "README.md"
 
 permissions:
   contents: read
@@ -10,12 +17,12 @@ jobs:
   auth-loop:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      SOLARI_API_KEY: ${{ secrets.SOLARI_API_KEY }}
 
     steps:
-      - name: Check out GhostOps branch
+      - name: Check out branch
         uses: actions/checkout@v7
-        with:
-          ref: ghostops-auth-loop
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -24,22 +31,15 @@ jobs:
           cache: pip
           cache-dependency-path: examples/ghostops-auth-loop-py/requirements.txt
 
-      - name: Verify Solari secret is configured
-        env:
-          SOLARI_API_KEY: ${{ secrets.SOLARI_API_KEY }}
-        shell: bash
-        run: |
-          if [ -z "$SOLARI_API_KEY" ]; then
-            echo "SOLARI_API_KEY is not configured as a repository Actions secret."
-            exit 1
-          fi
-          echo "SOLARI_API_KEY is configured."
+      - name: Skip live run when Solari secret is unavailable
+        if: env.SOLARI_API_KEY == ''
+        run: echo "::notice::SOLARI_API_KEY is unavailable; skipping the live Solari scenario without failing the PR."
 
       - name: Install dependencies
+        if: env.SOLARI_API_KEY != ''
         run: python -m pip install -r examples/ghostops-auth-loop-py/requirements.txt
 
       - name: Run GhostOps AUTH LOOP
+        if: env.SOLARI_API_KEY != ''
         working-directory: examples/ghostops-auth-loop-py
-        env:
-          SOLARI_API_KEY: ${{ secrets.SOLARI_API_KEY }}
         run: python main.py
