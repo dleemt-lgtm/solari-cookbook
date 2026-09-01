@@ -1,0 +1,39 @@
+name: GhostOps AUTH LOOP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  auth-loop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ghostops-auth-loop
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify Solari secret is present
+        env:
+          SOLARI_API_KEY: ${{ secrets.SOLARI_API_KEY }}
+        run: |
+          if [ -z "$SOLARI_API_KEY" ]; then
+            echo "SOLARI_API_KEY is not configured"
+            exit 1
+          fi
+          echo "SOLARI_API_KEY is configured"
+
+      - name: Install dependencies
+        working-directory: examples/ghostops-auth-loop-py
+        run: pip install -r requirements.txt
+
+      - name: Run GhostOps AUTH LOOP
+        working-directory: examples/ghostops-auth-loop-py
+        env:
+          SOLARI_API_KEY: ${{ secrets.SOLARI_API_KEY }}
+        run: python main.py
