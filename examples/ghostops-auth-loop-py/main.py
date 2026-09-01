@@ -76,9 +76,9 @@ async def main() -> None:
         context = await browser.new_context()
         page = await context.new_page()
 
-        # Route interception turns two reserved .test origins into our tiny,
-        # deterministic enterprise simulator while the browser itself runs on
-        # Solari infrastructure.
+        # Register routes on the browser context rather than only the current
+        # page. This matters when the auth flow redirects across origins: the
+        # new navigation must still be intercepted before DNS is attempted.
         async def auth_route(route, request):
             parsed = urlparse(request.url)
             cookies = await context.cookies(AUTH_ORIGIN)
@@ -97,7 +97,11 @@ async def main() -> None:
                             "url": AUTH_ORIGIN,
                         }
                     ])
-                    await route.fulfill(status=302, headers={"location": f"{PORTAL_ORIGIN}/home"}, body="")
+                    await route.fulfill(
+                        status=302,
+                        headers={"location": f"{PORTAL_ORIGIN}/home"},
+                        body="",
+                    )
                     return
 
             if identity_hint == WRONG_USER:
@@ -113,8 +117,8 @@ async def main() -> None:
             else:
                 await route.fulfill(status=302, headers={"location": AUTH_ORIGIN}, body="")
 
-        await page.route(f"{AUTH_ORIGIN}/**", auth_route)
-        await page.route(f"{PORTAL_ORIGIN}/**", portal_route)
+        await context.route(f"{AUTH_ORIGIN}/**", auth_route)
+        await context.route(f"{PORTAL_ORIGIN}/**", portal_route)
 
         # Seed the incident. The auth origin contains stale identity state.
         # The portal cookie represents unrelated browser state that must remain.
