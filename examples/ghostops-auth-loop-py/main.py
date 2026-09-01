@@ -1,6 +1,6 @@
 """GhostOps auth-loop recovery using a real Solari cloud browser.
 
-The identity provider is simulated with Playwright route interception so this
+The identity provider is simulated with browser route interception so this
 example is safe, deterministic, and requires no production credentials.
 
 Scenario:
@@ -76,13 +76,21 @@ async def main() -> None:
         context = await browser.new_context()
         page = await context.new_page()
 
-        # Register routes on the browser context rather than only the current
-        # page. This matters when the auth flow redirects across origins: the
-        # new navigation must still be intercepted before DNS is attempted.
+        # Keep the simulated login flow on one intercepted origin. We still
+        # seed a separate portal origin to prove that unrelated browser state
+        # survives remediation, but we do not depend on DNS for a fake host.
         async def auth_route(route, request):
             parsed = urlparse(request.url)
             cookies = await context.cookies(AUTH_ORIGIN)
             identity_hint = cookie_value(cookies, "identity_hint")
+            authenticated_user = cookie_value(cookies, "authenticated_user")
+
+            if parsed.path == "/success":
+                if authenticated_user == CORRECT_USER:
+                    await route.fulfill(status=200, content_type="text/html", body=SUCCESS_HTML)
+                else:
+                    await route.fulfill(status=302, headers={"location": AUTH_ORIGIN}, body="")
+                return
 
             if parsed.path == "/login":
                 username = parse_qs(parsed.query).get("username", [""])[0]
@@ -99,7 +107,7 @@ async def main() -> None:
                     ])
                     await route.fulfill(
                         status=302,
-                        headers={"location": f"{PORTAL_ORIGIN}/home"},
+                        headers={"location": f"{AUTH_ORIGIN}/success"},
                         body="",
                     )
                     return
@@ -109,16 +117,7 @@ async def main() -> None:
             else:
                 await route.fulfill(status=200, content_type="text/html", body=LOGIN_HTML)
 
-        async def portal_route(route, request):
-            cookies = await context.cookies(AUTH_ORIGIN)
-            authenticated_user = cookie_value(cookies, "authenticated_user")
-            if authenticated_user == CORRECT_USER:
-                await route.fulfill(status=200, content_type="text/html", body=SUCCESS_HTML)
-            else:
-                await route.fulfill(status=302, headers={"location": AUTH_ORIGIN}, body="")
-
         await context.route(f"{AUTH_ORIGIN}/**", auth_route)
-        await context.route(f"{PORTAL_ORIGIN}/**", portal_route)
 
         # Seed the incident. The auth origin contains stale identity state.
         # The portal cookie represents unrelated browser state that must remain.
@@ -171,11 +170,11 @@ async def main() -> None:
         print("global cookie clear used: NO")
         print()
 
-        # 4) Retry with the correct identity.
+        # 4) Retry with the correct identity and verify the resulting state.
         await page.goto(AUTH_ORIGIN)
         await page.get_by_label("Username").fill(CORRECT_USER)
         await page.get_by_role("button", name="Continue").click()
-        await page.wait_for_url(f"{PORTAL_ORIGIN}/home")
+        await page.wait_for_url(f"{AUTH_ORIGIN}/success")
 
         authenticated = (await page.locator("h1").inner_text()) == "Authenticated"
         portal_cookies_after = await context.cookies(PORTAL_ORIGIN)
