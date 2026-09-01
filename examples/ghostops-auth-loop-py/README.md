@@ -3,20 +3,40 @@
 A small GhostOps scenario showing an enterprise support agent recovering from a
 browser authentication loop **without clearing unrelated browser state**.
 
-This scenario is based on a real support pattern: a user enters the wrong
-username at an identity provider, the browser persists identity/session state,
+This scenario models a real enterprise support pattern. A user enters the wrong
+username at an identity provider; the browser persists identity/session state,
 and subsequent attempts remain trapped in the same flow. The correct fix is to
 remove only the affected site's authentication state and retry with the correct
 identity.
 
-For safety and reproducibility, this example does **not** automate Thomson
-Reuters or any production identity provider. It uses two intercepted test
-origins:
+For safety and reproducibility, this example does **not** automate any
+production identity provider. It uses two intercepted test origins:
 
 - `auth.ghostops.test` — simulated identity provider
 - `portal.ghostops.test` — unrelated session state that must survive remediation
 
 The browser itself is a real Solari cloud browser.
+
+## Live proof
+
+The scenario has run end to end in public GitHub Actions using the repository's
+`SOLARI_API_KEY`. The successful run launched a recorded Solari session,
+reproduced the loop, performed the domain-scoped deletion, restored
+authentication, preserved the unrelated session, and scored `100/100`.
+
+[Inspect the successful Solari run and logs](https://github.com/dleemt-lgtm/solari-cookbook/actions/runs/33528831930)
+
+## Where Solari is real
+
+- `Solari.launch(recording=True)` provisions the remote cloud browser.
+- Browser contexts, pages, cookies, locators, and input execute against that
+  remote session.
+- Domain-scoped cookie deletion is performed through the real remote browser
+  context.
+- Solari records the run and uploads a replay after the session closes.
+
+Only the identity-provider pages are fixtures. This keeps the example safe and
+deterministic without weakening the browser-state problem being evaluated.
 
 ## What it demonstrates
 

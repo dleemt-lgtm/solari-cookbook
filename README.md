@@ -7,6 +7,29 @@ Every example in this repo is a complete program you can run in under a minute.
 They are deliberately small: one idea each, no framework, no scaffolding to read
 past. Copy one into your project and change the parts you care about.
 
+## GhostOps — Solari build challenge submission
+
+**A real Solari browser recovers a user from a stale-identity authentication
+loop without signing them out of unrelated sites.**
+
+The scenario models a real enterprise support pattern: after the wrong username
+is entered at an identity provider, persisted browser state can trap later
+attempts in the same failed flow. The operationally correct fix is not “clear
+everything”; it is to remove only the affected site's authentication state and
+retry with the correct identity.
+
+This fork turns that support lesson into a safe, repeatable computer-use
+evaluation. No production service or credentials are automated. The identity
+provider is simulated through route interception, while the browser, cookie
+operations, recording, and replay all run on Solari.
+
+- [Read the submission brief](SUBMISSION.md)
+- [Open the runnable example](examples/ghostops-auth-loop-py)
+- [Inspect the successful live Solari run](https://github.com/dleemt-lgtm/solari-cookbook/actions/runs/33528831930)
+
+Built with AI: Codex implemented the scenario and Grok reviewed it through the
+pull-request loop.
+
 ## Examples
 
 ### Cloud browser
