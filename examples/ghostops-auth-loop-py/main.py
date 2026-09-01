@@ -15,12 +15,12 @@ import asyncio
 import os
 from urllib.parse import parse_qs, urlparse
 
-from solari_browser import Solari
-
 AUTH_ORIGIN = "https://auth.ghostops.test"
 PORTAL_ORIGIN = "https://portal.ghostops.test"
 WRONG_USER = "old-user@example.test"
 CORRECT_USER = "sarah.miller@example.test"
+AUTH_HOST = urlparse(AUTH_ORIGIN).hostname
+SUCCESS_URL = f"{PORTAL_ORIGIN}/home"
 
 LOGIN_HTML = """
 <!doctype html>
@@ -60,6 +60,17 @@ SUCCESS_HTML = """
 </html>
 """
 
+PORTAL_HTML = """
+<!doctype html>
+<html>
+  <head><title>GhostOps Portal</title></head>
+  <body>
+    <h1>Enterprise portal</h1>
+    <p id="status">Unrelated portal session is active.</p>
+  </body>
+</html>
+"""
+
 
 def cookie_value(cookies, name):
     for cookie in cookies:
@@ -68,9 +79,38 @@ def cookie_value(cookies, name):
     return None
 
 
+async def print_replay_url(solari, session_id: str) -> None:
+    """Wait for Solari's asynchronous recording upload and print its URL."""
+    from solari_browser.errors import SolariError
+
+    for attempt in range(1, 11):
+        await asyncio.sleep(3)
+        try:
+            replay = await solari.sessions.get_replay_url(session_id)
+        except SolariError as err:
+            if err.status == 404:
+                print(f"replay attempt {attempt}: not uploaded yet")
+                continue
+            print(f"replay unavailable: {err}")
+            return
+        print("replay:", replay.url)
+        return
+
+    print("replay unavailable after ~30s")
+
+
 async def main() -> None:
-    solari = Solari(api_key=os.environ["SOLARI_API_KEY"])
-    browser = await solari.launch()
+    api_key = os.getenv("SOLARI_API_KEY")
+    if not api_key:
+        raise SystemExit(
+            "SOLARI_API_KEY is required. Set it to a Solari slr_live_... key."
+        )
+
+    from solari_browser import Solari
+
+    solari = Solari(api_key=api_key)
+    browser = await solari.launch(recording=True)
+    session_id = browser.id
 
     try:
         context = await browser.new_context()
@@ -84,7 +124,9 @@ async def main() -> None:
             if parsed.path == "/login":
                 username = parse_qs(parsed.query).get("username", [""])[0]
                 if identity_hint == WRONG_USER:
-                    await route.fulfill(status=200, content_type="text/html", body=LOOP_HTML)
+                    await route.fulfill(
+                        status=200, content_type="text/html", body=LOOP_HTML
+                    )
                     return
                 if username == CORRECT_USER:
                     await context.add_cookies([
@@ -94,19 +136,29 @@ async def main() -> None:
                             "url": AUTH_ORIGIN,
                         }
                     ])
-                    # Keep the deterministic simulator on the intercepted request
-                    # instead of issuing a redirect to a synthetic hostname. This
-                    # avoids DNS being consulted by the remote browser while still
-                    # exercising the real Solari browser and cookie state.
-                    await route.fulfill(status=200, content_type="text/html", body=SUCCESS_HTML)
+                    await route.fulfill(
+                        status=302,
+                        headers={"location": SUCCESS_URL},
+                        body="",
+                    )
                     return
 
             if identity_hint == WRONG_USER:
-                await route.fulfill(status=200, content_type="text/html", body=LOOP_HTML)
+                await route.fulfill(
+                    status=200, content_type="text/html", body=LOOP_HTML
+                )
             else:
-                await route.fulfill(status=200, content_type="text/html", body=LOGIN_HTML)
+                await route.fulfill(
+                    status=200, content_type="text/html", body=LOGIN_HTML
+                )
+
+        async def portal_route(route, request):
+            parsed = urlparse(request.url)
+            body = SUCCESS_HTML if parsed.path == "/home" else PORTAL_HTML
+            await route.fulfill(status=200, content_type="text/html", body=body)
 
         await context.route(f"{AUTH_ORIGIN}/**", auth_route)
+        await context.route(f"{PORTAL_ORIGIN}/**", portal_route)
 
         await context.add_cookies([
             {"name": "identity_hint", "value": WRONG_USER, "url": AUTH_ORIGIN},
@@ -114,8 +166,22 @@ async def main() -> None:
         ])
 
         print("GHOSTOPS INCIDENT: AUTH LOOP")
-        print("session:", browser.id)
+        print("session:", session_id)
         print()
+
+        # Load the unrelated origin before the incident so preservation is tested
+        # against browser state that was actually used, not merely injected.
+        await page.goto(PORTAL_ORIGIN)
+        await page.locator("#status").wait_for()
+        portal_cookies_before = await context.cookies(PORTAL_ORIGIN)
+        portal_loaded = (
+            await page.locator("#status").inner_text()
+            == "Unrelated portal session is active."
+        )
+        assert portal_loaded, "Unrelated portal fixture did not load"
+        assert (
+            cookie_value(portal_cookies_before, "portal_session") == "keep-me"
+        ), "Unrelated portal cookie was not loaded"
 
         await page.goto(AUTH_ORIGIN)
         first_status = await page.locator("#status").inner_text()
@@ -129,26 +195,27 @@ async def main() -> None:
         print()
 
         auth_cookies = await context.cookies(AUTH_ORIGIN)
-        portal_cookies_before = await context.cookies(PORTAL_ORIGIN)
         print("DIAGNOSIS")
         print("affected origin:", AUTH_ORIGIN)
         print("auth cookies:", [c["name"] for c in auth_cookies])
-        print("unrelated portal cookie present:", bool(cookie_value(portal_cookies_before, "portal_session")))
+        print(
+            "unrelated portal cookie present:",
+            bool(cookie_value(portal_cookies_before, "portal_session")),
+        )
         print()
 
-        for cookie in auth_cookies:
-            await context.add_cookies([
-                {
-                    "name": cookie["name"],
-                    "value": "",
-                    "domain": cookie["domain"],
-                    "path": cookie.get("path", "/"),
-                    "expires": 1,
-                }
-            ])
+        # Playwright performs a real domain-scoped deletion. Avoid expiry-cookie
+        # emulation, which can be unreliable across remote Chromium versions.
+        await context.clear_cookies(domain=AUTH_HOST)
+        auth_cookies_after = await context.cookies(AUTH_ORIGIN)
+        identity_hint_deleted = (
+            cookie_value(auth_cookies_after, "identity_hint") is None
+        )
+        assert identity_hint_deleted, "identity_hint survived targeted deletion"
 
         print("REMEDIATION")
         print("deleted state scoped to:", AUTH_ORIGIN)
+        print("identity_hint deleted:", "PASS")
         print("global cookie clear used: NO")
         print()
 
@@ -157,24 +224,46 @@ async def main() -> None:
         await page.get_by_role("button", name="Continue").click()
         await page.get_by_role("heading", name="Authenticated").wait_for()
 
-        authenticated = (await page.locator("h1").inner_text()) == "Authenticated"
+        authenticated_user = cookie_value(
+            await context.cookies(AUTH_ORIGIN), "authenticated_user"
+        )
+        authenticated = (
+            page.url == SUCCESS_URL
+            and (await page.locator("h1").inner_text()) == "Authenticated"
+            and (await page.locator("#status").inner_text())
+            == "Signed in successfully."
+            and authenticated_user == CORRECT_USER
+        )
         portal_cookies_after = await context.cookies(PORTAL_ORIGIN)
-        unrelated_preserved = cookie_value(portal_cookies_after, "portal_session") == "keep-me"
+        unrelated_preserved = (
+            cookie_value(portal_cookies_after, "portal_session") == "keep-me"
+        )
         excessive_remediation = not unrelated_preserved
 
         score = 0
-        score += 35 if loop_confirmed else 0
-        score += 40 if authenticated else 0
+        score += 25 if loop_confirmed else 0
+        score += 25 if identity_hint_deleted else 0
+        score += 25 if authenticated else 0
         score += 25 if unrelated_preserved else 0
 
         print("SCENARIO RESULT")
+        print(
+            "TARGETED COOKIE DELETED        ",
+            "PASS" if identity_hint_deleted else "FAIL",
+        )
         print("AUTHENTICATION RESTORED         ", "PASS" if authenticated else "FAIL")
         print("UNRELATED SESSION PRESERVED    ", "PASS" if unrelated_preserved else "FAIL")
         print("EXCESSIVE REMEDIATION          ", "YES" if excessive_remediation else "NONE")
         print(f"SCORE                            {score}/100")
 
+        assert score == 100, "AUTH LOOP scenario failed one or more checks"
+
     finally:
+        # Give rrweb time to flush its final batched events before release.
+        await asyncio.sleep(2)
         await browser.close()
+        print("session id:", session_id)
+        await print_replay_url(solari, session_id)
         await solari.close()
 
 

@@ -23,11 +23,14 @@ The browser itself is a real Solari cloud browser.
 1. Seed a browser with stale identity state and an unrelated session cookie.
 2. Reproduce the authentication loop.
 3. Diagnose persisted site-scoped auth state.
-4. Delete only cookies scoped to the affected auth origin.
+4. Delete only cookies scoped to the affected auth origin and assert the stale
+   identity cookie is gone.
 5. Retry with the correct username.
-6. Verify authentication succeeds.
-7. Verify unrelated browser state was preserved.
-8. Score the remediation for correctness and collateral damage.
+6. Verify authentication succeeds at the expected portal URL with the expected
+   page status.
+7. Verify unrelated, previously loaded browser state was preserved.
+8. Print the Solari session ID and replay URL for audit evidence.
+9. Score the remediation for correctness and collateral damage.
 
 ## Run
 
@@ -42,6 +45,7 @@ python main.py
 Expected final result:
 
 ```text
+TARGETED COOKIE DELETED         PASS
 AUTHENTICATION RESTORED          PASS
 UNRELATED SESSION PRESERVED     PASS
 EXCESSIVE REMEDIATION           NONE
