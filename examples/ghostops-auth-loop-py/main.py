@@ -20,7 +20,7 @@ PORTAL_ORIGIN = "https://portal.ghostops.test"
 WRONG_USER = "old-user@example.test"
 CORRECT_USER = "sarah.miller@example.test"
 AUTH_HOST = urlparse(AUTH_ORIGIN).hostname
-SUCCESS_URL = f"{PORTAL_ORIGIN}/home"
+SUCCESS_URL = f"{AUTH_ORIGIN}/authenticated"
 
 LOGIN_HTML = """
 <!doctype html>
@@ -56,6 +56,9 @@ SUCCESS_HTML = """
   <body>
     <h1>Authenticated</h1>
     <p id="status">Signed in successfully.</p>
+    <script>
+      window.history.replaceState({}, "", "/authenticated");
+    </script>
   </body>
 </html>
 """
@@ -129,17 +132,21 @@ async def main() -> None:
                     )
                     return
                 if username == CORRECT_USER:
-                    await context.add_cookies([
-                        {
-                            "name": "authenticated_user",
-                            "value": CORRECT_USER,
-                            "url": AUTH_ORIGIN,
-                        }
-                    ])
+                    # A synthetic cross-origin 302 can crash some remote Chromium
+                    # targets during route fulfillment. Return the authenticated
+                    # fixture directly, set its cookie through the response, and
+                    # let the fixture update the visible URL without another
+                    # network navigation.
                     await route.fulfill(
-                        status=302,
-                        headers={"location": SUCCESS_URL},
-                        body="",
+                        status=200,
+                        headers={
+                            "content-type": "text/html; charset=utf-8",
+                            "set-cookie": (
+                                f"authenticated_user={CORRECT_USER}; "
+                                "Path=/; Secure; SameSite=Lax"
+                            ),
+                        },
+                        body=SUCCESS_HTML,
                     )
                     return
 
@@ -152,10 +159,10 @@ async def main() -> None:
                     status=200, content_type="text/html", body=LOGIN_HTML
                 )
 
-        async def portal_route(route, request):
-            parsed = urlparse(request.url)
-            body = SUCCESS_HTML if parsed.path == "/home" else PORTAL_HTML
-            await route.fulfill(status=200, content_type="text/html", body=body)
+        async def portal_route(route, _request):
+            await route.fulfill(
+                status=200, content_type="text/html", body=PORTAL_HTML
+            )
 
         await context.route(f"{AUTH_ORIGIN}/**", auth_route)
         await context.route(f"{PORTAL_ORIGIN}/**", portal_route)
@@ -222,6 +229,7 @@ async def main() -> None:
         await page.goto(AUTH_ORIGIN)
         await page.get_by_label("Username").fill(CORRECT_USER)
         await page.get_by_role("button", name="Continue").click()
+        await page.wait_for_url(SUCCESS_URL)
         await page.get_by_role("heading", name="Authenticated").wait_for()
 
         authenticated_user = cookie_value(

@@ -26,7 +26,7 @@ The browser itself is a real Solari cloud browser.
 4. Delete only cookies scoped to the affected auth origin and assert the stale
    identity cookie is gone.
 5. Retry with the correct username.
-6. Verify authentication succeeds at the expected portal URL with the expected
+6. Verify authentication succeeds at the expected success URL with the expected
    page status.
 7. Verify unrelated, previously loaded browser state was preserved.
 8. Print the Solari session ID and replay URL for audit evidence.
